@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"net"
+	"syscall"
 )
 
 // Options is a struct for specifying configuration parameters for the Recovery middleware.
@@ -80,12 +82,26 @@ func (r *Recovery) Handler(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, req *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				r.panicHandler.ServeHTTP(w, req)
 
-				stack := make([]byte, r.opt.StackSize)
-				stack = stack[:runtime.Stack(stack, r.opt.IncludeFullStack)]
+				// Check for a broken connection, as it is not really a
+				// condition that warrants a panic stack trace.
+				var brokenPipe bool
+				if ne, ok := err.(*net.OpError); ok {
+					if se, ok := ne.Err.(*os.SyscallError); ok {
+						if se.Err == syscall.EPIPE || se.Err == syscall.ECONNRESET {
+							brokenPipe = true
+						}
+					}
+				}
 
-				r.Printf("Recovering from Panic: %s\n%s", err, stack)
+				// don't try to respond if the conn broke. duh.
+				if !brokenPipe {
+					r.panicHandler.ServeHTTP(w, req)
+					stack := make([]byte, r.opt.StackSize)
+					stack = stack[:runtime.Stack(stack, r.opt.IncludeFullStack)]
+
+					r.Printf("Recovering from Panic: %s\n%s", err, stack)
+				}
 			}
 		}()
 
